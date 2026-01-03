@@ -1,106 +1,122 @@
 <?php
-// add_address.php - save a new delivery address for logged-in user
-require 'db.php';
 
-// ---------- helper: try to read Bearer token from headers ----------
-function get_bearer_token_from_header(): ?string {
-    $auth = null;
+/**
+ * add_address.php - Add a new delivery address for customer
+ * Supports both token and user_id authentication
+ */
 
-    if (function_exists('getallheaders')) {
-        $h = getallheaders();
-        if (isset($h['Authorization'])) {
-            $auth = $h['Authorization'];
-        } elseif (isset($h['authorization'])) {
-            $auth = $h['authorization'];
-        }
-    }
+header('Content-Type: application/json');
+require_once 'db.php';
 
-    if (!$auth && isset($_SERVER['HTTP_AUTHORIZATION'])) {
-        $auth = $_SERVER['HTTP_AUTHORIZATION'];
-    }
-    if (!$auth && isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
-        $auth = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
-    }
+// Read JSON body
+$data = json_decode(file_get_contents('php://input'), true);
 
-    if ($auth && preg_match('/Bearer\s+(.*)$/i', $auth, $m)) {
-        return trim($m[1]);
-    }
-    return null;
-}
-
-// ---------- read JSON body ----------
-$input = json_decode(file_get_contents('php://input'), true);
-if (!is_array($input)) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Invalid JSON body']);
+if (!is_array($data)) {
+    echo json_encode(['status' => 'error', 'message' => 'Invalid JSON body']);
     exit;
 }
 
-// 1st try: header lo nunchi token chadavadam
-$token = get_bearer_token_from_header();
+// Get user_id (direct or from token)
+$user_id = isset($data['user_id']) ? intval($data['user_id']) : 0;
 
-// 2nd fallback: body lo "token" field unde danini vadukundam
-if (!$token && !empty($input['token'])) {
-    $token = trim((string)$input['token']);
+// If no user_id, try token
+if ($user_id <= 0 && !empty($data['token'])) {
+    $token = trim($data['token']);
+    $stmt = $conn->prepare("SELECT id FROM users WHERE token = ? LIMIT 1");
+    $stmt->bind_param("s", $token);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    if ($row = $result->fetch_assoc()) {
+        $user_id = (int)$row['id'];
+    }
 }
 
-// still no token -> unauthorized
-if (!$token) {
-    http_response_code(401);
-    echo json_encode(['error' => 'Unauthorized (no token found in header or body)']);
+if ($user_id <= 0) {
+    echo json_encode(['status' => 'error', 'message' => 'User ID or valid token required']);
     exit;
 }
 
-// ---------- find user by token ----------
-$stmt = $pdo->prepare("SELECT * FROM users WHERE token = ? LIMIT 1");
-$stmt->execute([$token]);
-$user = $stmt->fetch();
+// Address fields
+$label = isset($data['label']) ? trim($data['label']) : 'Home';
+$address_line = isset($data['address_line']) ? trim($data['address_line']) : '';
+$city = isset($data['city']) ? trim($data['city']) : '';
+$pincode = isset($data['pincode']) ? trim($data['pincode']) : '';
+$lat = isset($data['lat']) ? (float)$data['lat'] : 0;
+$lng = isset($data['lng']) ? (float)$data['lng'] : 0;
+$is_default = isset($data['is_default']) ? ($data['is_default'] ? 1 : 0) : 0;
 
-if (!$user) {
-    http_response_code(401);
-    echo json_encode(['error' => 'Invalid token']);
-    exit;
-}
-
-// ---------- address fields ----------
-$label        = trim((string)($input['label'] ?? 'Home'));
-$address_line = trim((string)($input['address_line'] ?? ''));
-$city         = trim((string)($input['city'] ?? ''));
-$pincode      = trim((string)($input['pincode'] ?? ''));
-$lat          = $input['lat'] ?? null;
-$lng          = $input['lng'] ?? null;
-
-if ($address_line === '') {
-    http_response_code(400);
-    echo json_encode(['error' => 'address_line is required']);
+// Validation
+if (empty($address_line)) {
+    echo json_encode(['status' => 'error', 'message' => 'Address line is required']);
     exit;
 }
 
 try {
-    $stmt = $pdo->prepare(
-        "INSERT INTO addresses (user_id, label, address_line, city, pincode, lat, lng, is_default, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())"
+    // Check if addresses table exists
+    $tableCheck = $conn->query("SHOW TABLES LIKE 'addresses'");
+    if ($tableCheck->num_rows == 0) {
+        // Create addresses table
+        $conn->query("
+            CREATE TABLE IF NOT EXISTS `addresses` (
+                `id` int(11) NOT NULL AUTO_INCREMENT,
+                `user_id` int(11) NOT NULL,
+                `label` varchar(50) DEFAULT 'Home',
+                `address_line` text NOT NULL,
+                `city` varchar(100) DEFAULT NULL,
+                `pincode` varchar(10) DEFAULT NULL,
+                `lat` double DEFAULT NULL,
+                `lng` double DEFAULT NULL,
+                `is_default` tinyint(1) DEFAULT 0,
+                `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+                `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+                PRIMARY KEY (`id`),
+                KEY `fk_addr_user` (`user_id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
+    }
+
+    // If this is set as default, unset other defaults
+    if ($is_default) {
+        $stmt = $conn->prepare("UPDATE addresses SET is_default = 0 WHERE user_id = ?");
+        $stmt->bind_param("i", $user_id);
+        $stmt->execute();
+    }
+
+    // Insert address (without updated_at since it may not exist in older tables)
+    $stmt = $conn->prepare(
+        "INSERT INTO addresses (user_id, label, address_line, city, pincode, lat, lng, is_default, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())"
     );
-    $stmt->execute([
-        $user['id'],
-        $label,
-        $address_line,
-        $city,
-        $pincode,
-        $lat,
-        $lng
-    ]);
 
-    $id = $pdo->lastInsertId();
-    $stmt = $pdo->prepare("SELECT * FROM addresses WHERE id = ? LIMIT 1");
-    $stmt->execute([$id]);
-    $addr = $stmt->fetch();
+    if (!$stmt) {
+        echo json_encode(['status' => 'error', 'error' => 'Prepare failed: ' . $conn->error]);
+        exit;
+    }
 
-    http_response_code(201);
-    echo json_encode(['status' => 'ok', 'address' => $addr]);
+    $stmt->bind_param("issssddi", $user_id, $label, $address_line, $city, $pincode, $lat, $lng, $is_default);
 
-} catch (Throwable $e) {
-    error_log('add_address.php error: '.$e->getMessage());
-    http_response_code(500);
-    echo json_encode(['error' => 'internal_server_error']);
+    if ($stmt->execute()) {
+        $address_id = $conn->insert_id;
+
+        echo json_encode([
+            'status' => 'ok',
+            'message' => 'Address saved successfully',
+            'address' => [
+                'id' => $address_id,
+                'label' => $label,
+                'address_line' => $address_line,
+                'city' => $city,
+                'pincode' => $pincode,
+                'lat' => $lat,
+                'lng' => $lng,
+                'is_default' => (bool)$is_default
+            ]
+        ]);
+    } else {
+        echo json_encode(['status' => 'error', 'error' => 'Failed to save address: ' . $stmt->error]);
+    }
+} catch (Exception $e) {
+    echo json_encode(['status' => 'error', 'error' => $e->getMessage()]);
 }
+
+$conn->close();

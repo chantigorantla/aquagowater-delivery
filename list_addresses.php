@@ -1,48 +1,53 @@
 <?php
-// list_addresses.php - list all addresses for logged-in user
-require 'db.php';
 
-function get_bearer_token(): ?string {
-    if (function_exists('getallheaders')) {
-        $h = getallheaders();
-        $auth = $h['Authorization'] ?? ($h['authorization'] ?? null);
-    } else {
-        $auth = $_SERVER['HTTP_AUTHORIZATION'] ?? ($_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null);
-    }
-    if ($auth && preg_match('/Bearer\s+(.*)$/i', $auth, $m)) return trim($m[1]);
-    return null;
-}
+/**
+ * Get user addresses - Simplified
+ * Expects: user_id
+ */
+include "db.php";
+header("Content-Type: application/json");
 
-$token = get_bearer_token();
-if (!$token) {
-    http_response_code(401);
-    echo json_encode(['error' => 'Unauthorized']);
+$data = json_decode(file_get_contents("php://input"), true);
+
+if (!isset($data['user_id'])) {
+    echo json_encode(["status" => "error", "error" => "User ID required"]);
     exit;
 }
 
-$stmt = $pdo->prepare("SELECT * FROM users WHERE token = ? LIMIT 1");
-$stmt->execute([$token]);
-$user = $stmt->fetch();
-if (!$user) {
-    http_response_code(401);
-    echo json_encode(['error' => 'Invalid token']);
-    exit;
-}
+$userId = (int)$data['user_id'];
 
 try {
-    $stmt = $pdo->prepare(
+    $query = $conn->prepare(
         "SELECT id, label, address_line, city, pincode, lat, lng, is_default
          FROM addresses
          WHERE user_id = ?
-         ORDER BY created_at DESC"
+         ORDER BY is_default DESC, id DESC"
     );
-    $stmt->execute([$user['id']]);
-    $rows = $stmt->fetchAll();
+    $query->bind_param("i", $userId);
+    $query->execute();
+    $result = $query->get_result();
 
-    echo json_encode(['status' => 'ok', 'addresses' => $rows]);
+    $addresses = [];
+    while ($row = $result->fetch_assoc()) {
+        $addresses[] = [
+            "id" => (int)$row['id'],
+            "label" => $row['label'] ?? "Home",
+            "address_line" => $row['address_line'],
+            "city" => $row['city'],
+            "pincode" => $row['pincode'],
+            "lat" => (float)$row['lat'],
+            "lng" => (float)$row['lng'],
+            "is_default" => (bool)$row['is_default']
+        ];
+    }
 
-} catch (Throwable $e) {
-    error_log('list_addresses.php error: '.$e->getMessage());
-    http_response_code(500);
-    echo json_encode(['error' => 'internal_server_error']);
+    echo json_encode([
+        "status" => "ok",
+        "addresses" => $addresses
+    ]);
+} catch (Exception $e) {
+    echo json_encode([
+        "status" => "error",
+        "error" => "Failed to load addresses"
+    ]);
 }

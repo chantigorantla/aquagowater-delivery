@@ -1,85 +1,67 @@
 <?php
-// register.php - create account using name, phone, email
-require 'db.php'; // db.php lo $pdo ready ga untundi
 
-// Input ni JSON ga expect chestunnam (Postman / mobile app nunchi)
-$input = json_decode(file_get_contents('php://input'), true);
-if (!is_array($input)) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Invalid JSON body']);
+/**
+ * Simple Role-Based Registration
+ * Creates user with specified role (customer/partner)
+ */
+include "db.php";
+header("Content-Type: application/json");
+
+$data = json_decode(file_get_contents("php://input"), true);
+
+// Validate required fields
+if (!isset($data['name']) || !isset($data['email']) || !isset($data['password']) || !isset($data['role'])) {
+    echo json_encode(["status" => "error", "error" => "Name, email, password and role are required"]);
     exit;
 }
 
-// Values tiskovatam
-$phoneRaw = trim((string)($input['phone'] ?? ''));
-$name     = trim((string)($input['name'] ?? ''));
-$email    = trim((string)($input['email'] ?? ''));
+$name = trim($data['name']);
+$email = trim($data['email']);
+$password = $data['password'];
+$role = trim($data['role']);
 
-// Phone lo digits matrame vundela clean chestam
-$phone = preg_replace('/\D+/', '', $phoneRaw);
-
-// Basic validation
-if ($phone === '') {
-    http_response_code(400);
-    echo json_encode(['error' => 'phone is required']);
-    exit;
-}
-if ($name === '') {
-    http_response_code(400);
-    echo json_encode(['error' => 'name is required']);
-    exit;
-}
-if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-    http_response_code(400);
-    echo json_encode(['error' => 'invalid email']);
+// Validate email format
+if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    echo json_encode(["status" => "error", "error" => "Invalid email format"]);
     exit;
 }
 
-try {
-    // Already user unna check
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE phone = ? LIMIT 1");
-    $stmt->execute([$phone]);
-    $user = $stmt->fetch();
+// Validate role
+if ($role !== 'customer' && $role !== 'partner') {
+    echo json_encode(["status" => "error", "error" => "Role must be 'customer' or 'partner'"]);
+    exit;
+}
 
-    if ($user) {
-        // Already register ayithe token undakapoina create cheyyi
-        if (empty($user['token'])) {
-            $newToken = bin2hex(random_bytes(16));
-            $pdo->prepare("UPDATE users SET token = ?, updated_at = NOW() WHERE id = ?")
-                ->execute([$newToken, $user['id']]);
-            $user['token'] = $newToken;
-        }
+// Check if email already exists
+$check = $conn->prepare("SELECT id FROM users WHERE email = ?");
+$check->bind_param("s", $email);
+$check->execute();
+$checkResult = $check->get_result();
 
-        echo json_encode([
-            'status'  => 'ok',
-            'message' => 'user already exists',
-            'user'    => $user
-        ]);
-        exit;
-    }
+if ($checkResult->num_rows > 0) {
+    echo json_encode(["status" => "error", "error" => "Email already registered"]);
+    exit;
+}
 
-    // New user create
-    $token = bin2hex(random_bytes(16));
-    $ins = $pdo->prepare(
-        "INSERT INTO users (name, phone, email, token, created_at, updated_at)
-         VALUES (?, ?, ?, ?, NOW(), NOW())"
-    );
-    $ins->execute([$name, $phone, $email, $token]);
-    $id = $pdo->lastInsertId();
+// Hash password
+$hashedPassword = password_hash($password, PASSWORD_DEFAULT);
 
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE id = ? LIMIT 1");
-    $stmt->execute([$id]);
-    $newUser = $stmt->fetch();
+// Insert user
+$stmt = $conn->prepare("INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)");
+$stmt->bind_param("ssss", $name, $email, $hashedPassword, $role);
 
-    http_response_code(201);
+if ($stmt->execute()) {
+    $userId = $conn->insert_id;
+
     echo json_encode([
-        'status'  => 'ok',
-        'message' => 'registered',
-        'user'    => $newUser
+        "status" => "ok",
+        "user" => [
+            "id" => $userId,
+            "name" => $name,
+            "email" => $email,
+            "role" => $role
+        ]
     ]);
-
-} catch (Throwable $e) {
-    error_log('register.php error: '.$e->getMessage());
-    http_response_code(500);
-    echo json_encode(['error' => 'internal_server_error']);
+} else {
+    echo json_encode(["status" => "error", "error" => "Registration failed: " . $conn->error]);
 }

@@ -1,48 +1,94 @@
 <?php
-// add_product.php - add a water can product (for admin/testing)
-require 'db.php';
+// add_product.php - Add a new product for partner
+header('Content-Type: application/json');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type');
 
+if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
+    exit(0);
+}
+
+require_once 'db.php';
+
+if (!$conn || $conn->connect_error) {
+    echo json_encode(['success' => false, 'message' => 'Database connection failed']);
+    exit;
+}
+
+// Get input
 $input = json_decode(file_get_contents('php://input'), true);
-if (!is_array($input)) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Invalid JSON']);
+if (!$input) {
+    $input = $_POST;
+}
+
+// Support both user_id and partner_id
+$partner_id = isset($input['partner_id']) ? (int)$input['partner_id'] : 0;
+if ($partner_id <= 0) {
+    $partner_id = isset($input['user_id']) ? (int)$input['user_id'] : 0;
+}
+
+$name = isset($input['name']) ? trim($input['name']) : '';
+$size = isset($input['size']) ? trim($input['size']) : '';
+$price = isset($input['price']) ? (float)$input['price'] : 0;
+$stock = isset($input['stock']) ? (int)$input['stock'] : 0;
+$description = isset($input['description']) ? trim($input['description']) : '';
+$image_url = isset($input['image_url']) ? trim($input['image_url']) : '';
+
+// Validation
+if ($partner_id <= 0) {
+    echo json_encode(['success' => false, 'message' => 'Partner ID required']);
     exit;
 }
 
-$name  = trim((string)($input['name'] ?? ''));
-$desc  = trim((string)($input['description'] ?? ''));
-$unit  = trim((string)($input['unit'] ?? ''));
-$price = (float)($input['price'] ?? 0);
-$stock = (int)($input['stock'] ?? 0);
-
-if ($name === '') {
-    http_response_code(400);
-    echo json_encode(['error' => 'name is required']);
+if (empty($name)) {
+    echo json_encode(['success' => false, 'message' => 'Product name is required']);
     exit;
 }
+
 if ($price <= 0) {
-    http_response_code(400);
-    echo json_encode(['error' => 'price must be > 0']);
+    echo json_encode(['success' => false, 'message' => 'Price must be greater than 0']);
     exit;
 }
 
-try {
-    $stmt = $pdo->prepare(
-        "INSERT INTO products (name, description, unit, price, stock, created_at)
-         VALUES (?, ?, ?, ?, ?, NOW())"
-    );
-    $stmt->execute([$name, $desc, $unit, $price, $stock]);
+// Insert product - table has: id, partner_id, name, size, price, description, image_url, stock
+// Note: price is INT, stock is INT
+$sql = "INSERT INTO products (partner_id, name, size, price, description, image_url, stock) 
+        VALUES (?, ?, ?, ?, ?, ?, ?)";
+$stmt = $conn->prepare($sql);
 
-    $id = $pdo->lastInsertId();
-    $stmt = $pdo->prepare("SELECT * FROM products WHERE id = ?");
-    $stmt->execute([$id]);
-    $product = $stmt->fetch();
-
-    http_response_code(201);
-    echo json_encode(['status' => 'ok', 'product' => $product]);
-
-} catch (Throwable $e) {
-    error_log('add_product.php error: '.$e->getMessage());
-    http_response_code(500);
-    echo json_encode(['error' => 'internal_server_error']);
+if (!$stmt) {
+    // If description column doesn't exist, try simpler insert
+    $sql = "INSERT INTO products (partner_id, name, size, price, image_url, stock) VALUES (?, ?, ?, ?, ?, ?)";
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        echo json_encode(['success' => false, 'message' => 'Database error: ' . $conn->error]);
+        exit;
+    }
+    $stmt->bind_param("issisi", $partner_id, $name, $size, $price, $image_url, $stock);
+} else {
+    $stmt->bind_param("issiisi", $partner_id, $name, $size, $price, $description, $image_url, $stock);
 }
+
+if ($stmt->execute()) {
+    $product_id = $conn->insert_id;
+
+    echo json_encode([
+        'success' => true,
+        'status' => 'ok',
+        'message' => 'Product added successfully',
+        'product' => [
+            'id' => $product_id,
+            'partner_id' => $partner_id,
+            'name' => $name,
+            'size' => $size,
+            'price' => $price,
+            'image_url' => $image_url
+        ]
+    ]);
+} else {
+    echo json_encode(['success' => false, 'message' => 'Failed to add product: ' . $stmt->error]);
+}
+
+$stmt->close();
+$conn->close();

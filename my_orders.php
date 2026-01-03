@@ -1,62 +1,76 @@
 <?php
-// my_orders.php - list all orders for logged-in user
-require 'db.php';
 
-// ---------- read JSON body ----------
-$input = json_decode(file_get_contents('php://input'), true);
-if (!is_array($input)) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Invalid JSON body']);
+/**
+ * Get user's orders - Simplified without token
+ * Expects: user_id
+ */
+include "db.php";
+header("Content-Type: application/json");
+
+$data = json_decode(file_get_contents("php://input"), true);
+
+if (!isset($data['user_id'])) {
+    echo json_encode(["status" => "error", "error" => "User ID is required"]);
     exit;
 }
 
-$token = trim((string)($input['token'] ?? ''));
-
-if ($token === '') {
-    http_response_code(401);
-    echo json_encode(['error' => 'Unauthorized (no token)']);
-    exit;
-}
-
-// ---------- get user ----------
-$stmt = $pdo->prepare("SELECT * FROM users WHERE token = ? LIMIT 1");
-$stmt->execute([$token]);
-$user = $stmt->fetch();
-
-if (!$user) {
-    http_response_code(401);
-    echo json_encode(['error' => 'Invalid token']);
-    exit;
-}
+$userId = (int)$data['user_id'];
 
 try {
-    // Get orders
-    $stmt = $pdo->prepare(
-        "SELECT id, address_id, subtotal, delivery_fee, discount, total,
-                payment_method, payment_status, order_status, created_at
-         FROM orders
-         WHERE user_id = ?
-         ORDER BY created_at DESC"
+    // Get orders (using correct column names)
+    $orderQuery = $conn->prepare(
+        "SELECT id, total, status, created_at 
+         FROM orders 
+         WHERE user_id = ? 
+         ORDER BY created_at DESC
+         LIMIT 10"
     );
-    $stmt->execute([$user['id']]);
-    $orders = $stmt->fetchAll();
+    $orderQuery->bind_param("i", $userId);
+    $orderQuery->execute();
+    $orderResult = $orderQuery->get_result();
 
-    // Attach order items to each order
-    foreach ($orders as &$o) {
-        $stItems = $pdo->prepare(
-            "SELECT oi.product_id, p.name, oi.qty, oi.price, oi.total_price
+    $orders = [];
+    while ($order = $orderResult->fetch_assoc()) {
+        $orderId = (int)$order['id'];
+
+        // Get order items
+        $itemQuery = $conn->prepare(
+            "SELECT oi.product_id, oi.qty, oi.price, oi.total_price, p.name as product_name
              FROM order_items oi
-             JOIN products p ON p.id = oi.product_id
+             LEFT JOIN products p ON oi.product_id = p.id
              WHERE oi.order_id = ?"
         );
-        $stItems->execute([$o['id']]);
-        $o['items'] = $stItems->fetchAll();
+        $itemQuery->bind_param("i", $orderId);
+        $itemQuery->execute();
+        $itemResult = $itemQuery->get_result();
+
+        $items = [];
+        while ($item = $itemResult->fetch_assoc()) {
+            $items[] = [
+                "product_id" => (int)$item['product_id'],
+                "product_name" => $item['product_name'] ?? "Water Can",
+                "qty" => (int)$item['qty'],
+                "price" => (float)$item['price'],
+                "total_price" => (float)$item['total_price']
+            ];
+        }
+
+        $orders[] = [
+            "id" => $orderId,
+            "total_amount" => (float)$order['total'],
+            "status" => $order['status'],
+            "created_at" => $order['created_at'],
+            "items" => $items
+        ];
     }
 
-    echo json_encode(['status' => 'ok', 'orders' => $orders]);
-
-} catch (Throwable $e) {
-    error_log('my_orders.php error: '.$e->getMessage());
-    http_response_code(500);
-    echo json_encode(['error' => 'internal_server_error']);
+    echo json_encode([
+        "status" => "ok",
+        "orders" => $orders
+    ]);
+} catch (Exception $e) {
+    echo json_encode([
+        "status" => "error",
+        "error" => "Failed to load orders"
+    ]);
 }
