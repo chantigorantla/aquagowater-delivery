@@ -23,6 +23,8 @@ $partnerId = isset($data['partner_id']) ? (int)$data['partner_id'] : null;
 $items = isset($data['items']) ? $data['items'] : [];
 $deliveryDate = isset($data['delivery_date']) ? $data['delivery_date'] : 'Today';
 $deliverySlot = isset($data['delivery_slot']) ? $data['delivery_slot'] : 'Morning (6 AM - 9 AM)';
+$deliveryNotes = isset($data['delivery_notes']) ? $data['delivery_notes'] : '';
+
 
 // If no items provided, use cart items
 if (empty($items)) {

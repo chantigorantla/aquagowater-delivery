@@ -4,6 +4,7 @@
  * Get products - optionally filtered by partner_id
  * If partner_id is provided, returns only that partner's products
  * Otherwise returns all products (for backward compatibility)
+ * Products with stock <= 0 are hidden from customers
  */
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
@@ -21,14 +22,14 @@ try {
     $partner_id = isset($_GET['partner_id']) ? (int)$_GET['partner_id'] : 0;
 
     if ($partner_id > 0) {
-        // Get products for specific partner
-        $query = $conn->prepare("SELECT id, partner_id, name, size, price, image_url FROM products WHERE partner_id = ? ORDER BY id");
+        // Get products for specific partner - hide out of stock products
+        $query = $conn->prepare("SELECT id, partner_id, name, size, price, image_url FROM products WHERE partner_id = ? AND stock > 0 ORDER BY id");
         $query->bind_param("i", $partner_id);
         $query->execute();
         $result = $query->get_result();
     } else {
-        // Get all products (backward compatibility)
-        $result = $conn->query("SELECT id, partner_id, name, size, price, image_url FROM products ORDER BY id");
+        // Get all products - hide out of stock products
+        $result = $conn->query("SELECT id, partner_id, name, size, price, image_url FROM products WHERE stock > 0 ORDER BY id");
     }
 
     $products = [];

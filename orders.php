@@ -30,6 +30,7 @@ if ($partner_id <= 0) {
 // Build query based on filter - use address_id from orders table
 $sql = "SELECT o.id, o.user_id, o.product_name, o.quantity, o.total, o.status, 
                o.payment_method, o.payment_status, o.created_at, o.address_id,
+               o.delivery_date, o.delivery_slot,
                u.name as customer_name, u.email as customer_email,
                a.address_line, a.city, a.pincode
         FROM orders o
@@ -100,6 +101,8 @@ while ($row = $result->fetch_assoc()) {
         'payment_method' => $row['payment_method'] ?? 'COD',
         'payment_status' => $row['payment_status'] ?? 'pending',
         'address' => $address,
+        'delivery_date' => $row['delivery_date'] ?? 'Today',
+        'time_slot' => $row['delivery_slot'] ?? '',
         'created_at' => $row['created_at']
     );
 }
